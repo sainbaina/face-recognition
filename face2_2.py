@@ -1,3 +1,4 @@
+from math import floor
 import cv2
 import json
 from datetime import datetime
@@ -11,7 +12,6 @@ employee = "visitors/employee"
 unknown_folder = "visitors/unregistered"
 report = "report/report.json"
 yolo = YOLO("yolov8l.pt") 
-frame_skip = 3
 known_face_encodings = []  
 known_face_names = []  
 were_tracked = {}
@@ -63,8 +63,6 @@ def clean_log(video_name):
                         ent = event
                     elif event['event_type'] == 'disappear':
                         diss = event
-                        print("fdfdf")
-                        print(diss)
                         break  
 
             if ent is not None:
@@ -82,13 +80,12 @@ def clean_log(video_name):
                     if file_name.endswith('.jpg'):
                         obj_id = file_name.split('__')[0] 
                         id_list.append(obj_id)
-        print(id_list)
 
         for event in events:
             if str(event['object_id']) in id_list:
                 filtered_events.append(event)
         
-    filtered_events = sorted(filtered_events, key=lambda x: datetime.strptime(x['timestamp'], "%Y-%m-%d %H:%M:%S.%f"))
+    filtered_events = sorted(filtered_events, key=lambda x: x['timestamp'])
 
     clear_json_file(report)
     with open(report, "w") as f:
@@ -101,31 +98,14 @@ def write_log(log_entry):
     with open(report, "w") as f:
         json.dump(data, f, indent=4)
 
-def log_event(event_type, obj_id, name=None):
+def log_event(timestamp, event_type, obj_id, name=None):
     log_entry = {
-        "timestamp": str(datetime.now()),
+        "timestamp": timestamp,
         "event_type": event_type,
         "object_id": obj_id,
         "name": name if name else "Unknown"
     }
     write_log(log_entry)
-
-# Handle re-ID and object disappearance
-def clean_repeated_disappear():
-    cleaned_events = []
-    previous_event = None
-    with open(report, "r") as f:
-        events = json.load(f)
-        for event in events:
-            if event["event_type"] == "disappear" and previous_event and \
-            previous_event["event_type"] == "disappear" and \
-            previous_event["object_id"] == event["object_id"]:
-                continue
-            cleaned_events.append(event)
-            previous_event = event
-        clear_json_file(report)
-        with open(report, "w") as f:
-            json.dump(cleaned_events, f, indent=4)
 
 # Improved tracking logic
 def match_face_to_known(roi, obj_id):
@@ -147,10 +127,14 @@ def match_face_to_known(roi, obj_id):
 # Object tracking with consistency check
 def run_recognition(video_name):
     count = 0
+    frame_skip = 3
+    curr_frame_time = 0 
     video_capture = cv2.VideoCapture(f"video/{video_name}.mp4")
     if not video_capture.isOpened():
         print(f"Error: Could not open video file {video_name}.mp4")
         return
+    
+    fps = video_capture.get(cv2.CAP_PROP_FPS)
 
     load_known_faces(employee)
     clear_json_file(report)
@@ -161,8 +145,11 @@ def run_recognition(video_name):
             break
 
         count += 1
+
         if count % frame_skip != 0:
             continue
+        
+        curr_frame_time = round(count / fps, 2)
 
         detected_id = set()
         results = yolo.track(source=frame, persist=True, conf=0.5, iou=0.25)
@@ -183,20 +170,18 @@ def run_recognition(video_name):
                     if obj_id not in tracked_objects:
                         if obj_id not in were_tracked:
                             tracked_objects[obj_id] = {"name": "Unknown", "recognized": False}
-                            log_event("entry", obj_id, tracked_objects[obj_id]["name"])
+                            log_event(curr_frame_time ,"entry", obj_id, tracked_objects[obj_id]["name"])
 
                     if not tracked_objects[obj_id]["recognized"]: 
                         roi = frame[y1:y2, x1:x2].copy()
                         name, seen_face = match_face_to_known(roi, obj_id)
                         if name:
-                            log_event("recognized", obj_id, name)
+                            log_event(curr_frame_time, "recognized", obj_id, name)
                         else:
                             if seen_face:
-                                print("fgg")
                                 folder_with_obj_id = unknown_folder + "/" + str(obj_id)
                                 unknown_image_path = folder_with_obj_id + "/" + f"{obj_id}__{video_name}.jpg"
                                 os.makedirs(folder_with_obj_id, exist_ok=True)
-                                print(unknown_image_path)
                                 cv2.imwrite(unknown_image_path, frame[y1:y2, x1:x2])
                     label = f'ID: {tracked_objects[obj_id]["name"]}, Conf: {conf:.2f}'
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
@@ -205,7 +190,7 @@ def run_recognition(video_name):
         # Check for missing tracked objects
         for obj_id in list(tracked_objects.keys()):
             if obj_id not in detected_id:
-                log_event("disappear", obj_id, tracked_objects[obj_id]["name"])
+                log_event(curr_frame_time, "disappear", obj_id, tracked_objects[obj_id]["name"])
                 del tracked_objects[obj_id]
 
         cv2.imshow("YOLOv8 Tracking", frame)
@@ -216,4 +201,4 @@ def run_recognition(video_name):
     video_capture.release()
     cv2.destroyAllWindows()
 
-run_recognition("video_2024-12-16_13-45-40")
+run_recognition("video_2024-12-17_12-39-06")
